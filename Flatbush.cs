@@ -4,17 +4,18 @@ using System.Numerics;
 
 namespace concaveman
 {
-    internal class Flatbush<T> where T : INumber<T>, IMinMaxValue<T>, IBitwiseOperators<T, T, T>, IShiftOperators<T, T, T>, IBinaryInteger<T>
+    public sealed class Flatbush<T> where T : INumber<T>, IMinMaxValue<T>
     {
-        private readonly T hilbertMaxT = T.MultiplicativeIdentity * T.CreateChecked(0xFFFF);
+        private const int HILBERT_MAX = 0xFFFF;
 
         private readonly int _numItems;
         private readonly int _nodeSize;
+
         private readonly List<int> _levelBounds;
+        private readonly PriorityQueue<int, T> _queue = new PriorityQueue<int, T>();
 
         private readonly T[] _boxes;
         private readonly int[] _indices;
-        private readonly PriorityQueue<int, T> _queue = new PriorityQueue<int, T>();
 
         private int _pos;
 
@@ -34,12 +35,15 @@ namespace concaveman
             {
                 throw new ArgumentException("numItems must be greater than zero", nameof(numItems));
             }
+            if (nodeSize < 2 || nodeSize > HILBERT_MAX)
+            {
+                throw new ArgumentException("must be at least 2 and no larger than 65535", nameof(nodeSize));
+            }
 
             _numItems = numItems;
-            _nodeSize = Math.Min(Math.Max(nodeSize, 2), 0xFFFF); // hilbertMax
+            _nodeSize = nodeSize;
 
-            // calculate the total number of nodes in the R-tree to allocate space for
-            // and the index of each tree level (used in search later)
+            // Calculate the total number of nodes in the R-tree to allocate space for and the index of each tree level (used in search later)
             int n = numItems;
             int numNodes = n;
             _levelBounds = [n * 4];
@@ -61,7 +65,14 @@ namespace concaveman
         }
 
         /// <summary>
-        /// Add a given rectangle to the index.
+        /// Add a point to the index. EN réalité c'est un rectangle avec min et max identique.
+        /// </summary>
+        public int Add(T x, T y)
+        {
+            return Add(x, y, x, y);
+        }
+        /// <summary>
+        /// Add a rectangle to the index.
         /// </summary>
         /// <returns>A zero-based, incremental number that represents the newly added rectangle.</returns>
         public int Add(T minX, T minY, T maxX, T maxY)
@@ -74,30 +85,18 @@ namespace concaveman
             boxes[_pos++] = maxX;
             boxes[_pos++] = maxY;
 
-            if (minX < MinX)
-            {
-                MinX = minX;
-            }
-            if (minY < MinY)
-            {
-                MinY = minY;
-            }
-            if (maxX > MaxX)
-            {
-                MaxX = maxX;
-            }
-            if (maxY > MaxY)
-            {
-                MaxY = maxY;
-            }
+            if (minX < MinX) MinX = minX;
+            if (minY < MinY) MinY = minY;
+            if (maxX > MaxX) MaxX = maxX;
+            if (maxY > MaxY) MaxY = maxY;
 
             return index;
         }
 
         /// <summary>
-        /// Method to perform the indexing, to be called after adding all the boxes via <see cref="Add"/>.
+        /// Perform the indexing.
         /// </summary>
-        public void Finish()
+        public void Create()
         {
             if (_pos >> 2 != _numItems)
             {
@@ -114,11 +113,13 @@ namespace concaveman
                 return;
             }
 
-            T width = MaxX - MinX;
-            T height = MaxY - MinY;
+            T width = (MaxX - MinX) != T.Zero ? (MaxX - MinX) : T.One;
+            T height = (MaxY - MinY) != T.Zero ? (MaxY - MinY) : T.One;
             uint[] hilbertValues = new uint[_numItems];
 
-            // map item centers into Hilbert coordinate space and calculate Hilbert values
+            // Map item centers into Hilbert coordinate space and calculate Hilbert values
+            T hilbertMaxT = T.CreateSaturating(HILBERT_MAX);
+            T twoT = T.CreateChecked(2);
             int pos = 0;
             for (int i = 0; i < _numItems; i++)
             {
@@ -127,27 +128,27 @@ namespace concaveman
                 T maxX = _boxes[pos++];
                 T maxY = _boxes[pos++];
 
-                T x = hilbertMaxT * (((minX + maxX) >> 1) - MinX) / width;
-                x -= x % T.One; // Floor
-                T y = hilbertMaxT * (((minY + maxY) >> 1) - MinY) / height;
-                y -= y % T.One; // Floor
-                hilbertValues[i] = Hilbert(uint.CreateChecked(x), uint.CreateChecked(y));
+                T x = hilbertMaxT * (((minX + maxX) / twoT) - MinX) / width;
+                x -= T.IsPositive(x) ? x % T.One : (T.One + x % T.One); // Floor
+                T y = hilbertMaxT * (((minY + maxY) / twoT) - MinY) / height;
+                y -= T.IsPositive(y) ? y % T.One : (T.One + y % T.One); // Floor
+                hilbertValues[i] = Hilbert(uint.CreateSaturating(x), uint.CreateSaturating(y));
             }
 
             // sort items by their Hilbert value (for packing later)
             Sort(hilbertValues, _boxes, _indices, 0, _numItems - 1, _nodeSize);
 
-            // generate nodes at each tree level, bottom-up
+            // Generate nodes at each tree level, bottom-up
             pos = 0;
             for (int i = 0; i < _levelBounds.Count - 1; i++)
             {
-                // generate a parent node for each block of consecutive <nodeSize> nodes
+                // Generate a parent node for each block of consecutive nodes
                 int end = _levelBounds[i];
                 while (pos < end)
                 {
                     int nodeIndex = pos;
 
-                    // calculate bbox for the new node
+                    // Calculate bbox for the new node
                     T nodeMinX = _boxes[pos++];
                     T nodeMinY = _boxes[pos++];
                     T nodeMaxX = _boxes[pos++];
@@ -160,7 +161,7 @@ namespace concaveman
                         nodeMaxY = T.Max(nodeMaxY, _boxes[pos++]);
                     }
 
-                    // add the new node to the tree data
+                    // Add the new node to the tree data
                     _indices[_pos >> 2] = nodeIndex;
                     _boxes[_pos++] = nodeMinX;
                     _boxes[_pos++] = nodeMinY;
@@ -171,7 +172,7 @@ namespace concaveman
         }
 
         /// <summary>
-        /// Search the index by a bounding box.
+        /// Search all index by a bounding box.
         /// </summary>
         /// <param name=""></param>
         /// <param name=""></param>
@@ -180,16 +181,230 @@ namespace concaveman
         /// <param name=""></param>
         /// <returns></returns>
         /// <exception cref="Error"></exception>
-        public List<int> Search(T minX, T minY, T maxX, T maxY, Func<int, bool> filterFn = null)
+        public List<int> Search(T minX, T minY, T maxX, T maxY)
         {
             if (_pos != _boxes.Length)
             {
-                throw new InvalidOperationException("Data not yet indexed, call Finish() before Search().");
+                throw new InvalidOperationException("Data not yet indexed, call Create() first.");
             }
 
             int nodeIndex = _boxes.Length - 4;
             Stack<int> stack = new Stack<int>();
             List<int> results = new List<int>();
+
+            while (true)
+            {
+                int end = Math.Min(nodeIndex + (_nodeSize * 4), UpperBound(nodeIndex, _levelBounds));
+                for (int pos = nodeIndex; pos < end; pos += 4)
+                {
+                    if (maxX < _boxes[pos] || maxY < _boxes[pos + 1] || minX > _boxes[pos + 2] || minY > _boxes[pos + 3])
+                    {
+                        continue;
+                    }
+
+                    int idx = _indices[pos >> 2];
+                    if (nodeIndex >= _numItems * 4)
+                    {
+                        stack.Push(idx); // Add node to the search queue.
+                    }
+                    else
+                    {
+                        results.Add(idx); // Store leaf item.
+                    }
+                }
+
+                if (stack.Count > 0)
+                {
+                    nodeIndex = stack.Pop();
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Search items in order of distance from the given point. Lesq distances sont au carré. Pour obtenir la distance eclidienne utiliser Math.sqrt().
+        /// </summary>
+        /// <param name="x"></param>
+        /// <param name="y"></param>
+        /// <param name="maxDistance">Si 0 ou moins alors est egamle à la valeur max de T</param>
+        /// <param name="maxResults"></param>
+        /// <returns></returns>
+        /// <exception cref="InvalidOperationException"></exception>
+        public bool Neighbors(T x, T y, T maxDistance)
+        {
+            if (_pos != _boxes.Length)
+            {
+                throw new InvalidOperationException("Data not yet indexed, call Create() first.");
+            }
+
+            if (maxDistance <= T.Zero)
+            {
+                maxDistance = T.MaxValue;
+            }
+
+            int nodeIndex = _boxes.Length - 4;
+            T maxDistSquared = maxDistance * maxDistance;
+
+            while (true)
+            {
+                int end = Math.Min(nodeIndex + (_nodeSize * 4), UpperBound(nodeIndex, _levelBounds));
+                for (int pos = nodeIndex; pos < end; pos += 4)
+                {
+                    T dx = AxisDist(x, _boxes[pos], _boxes[pos + 2]);
+                    T dy = AxisDist(y, _boxes[pos + 1], _boxes[pos + 3]);
+                    T dist = (dx * dx) + (dy * dy);
+                    if (dist > maxDistSquared)
+                    {
+                        continue;
+                    }
+
+                    int idx = _indices[pos >> 2];
+                    if (nodeIndex >= _numItems * 4)
+                    {
+                        _queue.Enqueue(idx << 1, dist); // node (use even id)
+                    }
+                    else
+                    {
+                        _queue.Enqueue((idx << 1) + 1, dist); // leaf item (use odd id)
+                    }
+                }
+
+                // pop items from the queue
+                while (_queue.Count > 0 && (_queue.Peek() & 1) == 1)
+                {
+                    _queue.TryPeek(out _, out T dist);
+
+                    if (dist > maxDistSquared)
+                    {
+                        _queue.Clear();
+                        return false;
+                    }
+
+                    _queue.Clear();
+                    return true;
+                }
+
+                if (_queue.Count > 0)
+                {
+                    nodeIndex = _queue.Dequeue() >> 1;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            _queue.Clear();
+            return false;
+        }
+        /// <summary>
+        /// Search items in order of distance from the given point. Lesq distances sont au carré. Pour obtenir la distance eclidienne utiliser Math.sqrt().
+        /// </summary>
+        /// <param name="x"></param>
+        /// <param name="y"></param>
+        /// <param name="maxDistance">Si 0 ou moins alors est egamle à la valeur max de T</param>
+        /// <param name="maxResults"></param>
+        /// <returns></returns>
+        /// <exception cref="InvalidOperationException"></exception>
+        public bool Neighbors(T x, T y, T maxDistance, out List<(int, T)> neighbors, int maxResults = int.MaxValue)
+        {
+            if (_pos != _boxes.Length)
+            {
+                throw new InvalidOperationException("Data not yet indexed, call Create() first.");
+            }
+
+            if (maxDistance <= T.Zero)
+            {
+                maxDistance = T.MaxValue;
+            }
+
+            int nodeIndex = _boxes.Length - 4;
+            neighbors = new List<(int, T)>();
+            T maxDistSquared = maxDistance * maxDistance;
+
+            while (true)
+            {
+                int end = Math.Min(nodeIndex + (_nodeSize * 4), UpperBound(nodeIndex, _levelBounds));
+                for (int pos = nodeIndex; pos < end; pos += 4)
+                {
+                    T dx = AxisDist(x, _boxes[pos], _boxes[pos + 2]);
+                    T dy = AxisDist(y, _boxes[pos + 1], _boxes[pos + 3]);
+                    T dist = (dx * dx) + (dy * dy);
+                    if (dist > maxDistSquared)
+                    {
+                        continue;
+                    }
+
+                    int idx = _indices[pos >> 2];
+                    if (nodeIndex >= _numItems * 4)
+                    {
+                        _queue.Enqueue(idx << 1, dist); // node (use even id)
+                    }
+                    else
+                    {
+                        _queue.Enqueue((idx << 1) + 1, dist); // leaf item (use odd id)
+                    }
+                }
+
+                // pop items from the queue
+                while (_queue.Count > 0 && (_queue.Peek() & 1) == 1)
+                {
+                    _queue.TryPeek(out int elem, out T dist);
+
+                    if (dist > maxDistSquared)
+                    {
+                        _queue.Clear();
+                        return neighbors.Count > 0;
+                    }
+
+                    neighbors.Add((elem >> 1, dist));
+                    _queue.Dequeue();
+
+                    if (neighbors.Count == maxResults)
+                    {
+                        _queue.Clear();
+                        return neighbors.Count > 0;
+                    }
+                }
+
+                if (_queue.Count > 0)
+                {
+                    nodeIndex = _queue.Dequeue() >> 1;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            _queue.Clear();
+            return neighbors.Count > 0;
+        }
+
+        /// <summary>
+        /// Search one index by a bounding box.
+        /// </summary>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <returns></returns>
+        /// <exception cref="Error"></exception>
+        public bool Contains(int index, T minX, T minY, T maxX, T maxY)
+        {
+            if (_pos != _boxes.Length)
+            {
+                throw new InvalidOperationException("Data not yet indexed, call Create() first.");
+            }
+
+            int nodeIndex = _boxes.Length - 4;
+            Stack<int> stack = new Stack<int>();
 
             while (true)
             {
@@ -213,15 +428,14 @@ namespace concaveman
                         continue;
                     }
 
-                    int index = _indices[pos >> 2];
+                    int idx = _indices[pos >> 2];
                     if (nodeIndex >= _numItems * 4)
                     {
-                        stack.Push(index); // Add node to the search queue.
-
+                        stack.Push(idx); // Add node to the search queue.
                     }
-                    else if (filterFn == null || filterFn(index))
+                    else if (idx == index)
                     {
-                        results.Add(index); // Store leaf item.
+                        return true;
                     }
                 }
 
@@ -235,92 +449,86 @@ namespace concaveman
                 }
             }
 
-            return results;
+            return false;
         }
 
         /// <summary>
-        /// Search items in order of distance from the given point.
+        /// Cette zone est elle vide?
         /// </summary>
-        /// <param name="x"></param>
-        /// <param name="y"></param>
-        /// <param name="maxDistance">Si 0 ou moins alors est egamle à la valeur max de T</param>
-        /// <param name="maxResults"></param>
-        /// <param name="filterFn"></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
+        /// <param name=""></param>
         /// <returns></returns>
-        /// <exception cref="InvalidOperationException"></exception>
-        public List<int> Neighbors(T x, T y, T maxDistance, double maxResults = double.MaxValue, Func<int, bool> filterFn = null)
+        /// <exception cref="Error"></exception>
+        public bool IsEmpty(T minX, T minY, T maxX, T maxY)
         {
             if (_pos != _boxes.Length)
             {
-                throw new InvalidOperationException("Data not yet indexed, call Finish() before Neighbors().");
-            }
-
-            if (maxDistance <= T.Zero)
-            {
-                maxDistance = T.MaxValue;
+                throw new InvalidOperationException("Data not yet indexed, call Create() first.");
             }
 
             int nodeIndex = _boxes.Length - 4;
-            List<int> results = new List<int>();
-            T maxDistSquared = maxDistance * maxDistance;
+            Stack<int> stack = new Stack<int>();
 
-            while (nodeIndex > 0)
+            while (true)
             {
                 int end = Math.Min(nodeIndex + (_nodeSize * 4), UpperBound(nodeIndex, _levelBounds));
                 for (int pos = nodeIndex; pos < end; pos += 4)
                 {
-                    T dx = AxisDist(x, _boxes[pos], _boxes[pos + 2]);
-                    T dy = AxisDist(y, _boxes[pos + 1], _boxes[pos + 3]);
-                    T dist = (dx * dx) + (dy * dy);
-                    if (dist > maxDistSquared)
+                    if (maxX < _boxes[pos])
+                    {
+                        continue;
+                    }
+                    if (maxY < _boxes[pos + 1])
+                    {
+                        continue;
+                    }
+                    if (minX > _boxes[pos + 2])
+                    {
+                        continue;
+                    }
+                    if (minY > _boxes[pos + 3])
                     {
                         continue;
                     }
 
-                    int index = _indices[pos >> 2];
+                    int idx = _indices[pos >> 2];
                     if (nodeIndex >= _numItems * 4)
                     {
-                        _queue.Enqueue(index << 1, dist); // node (use even id)
-
+                        stack.Push(idx); // Add node to the search queue.
                     }
-                    else if (filterFn == null || filterFn(index))
+                    else
                     {
-                        _queue.Enqueue((index << 1) + 1, dist); // leaf item (use odd id)
+                        return false;
                     }
                 }
 
-                // pop items from the queue
-                while (_queue.Count > 0)
+                if (stack.Count > 0)
                 {
-                    _queue.TryPeek(out int elem, out T dist);
-                    if ((elem & 1) == 1)
-                    {
-                        if (dist > maxDistSquared)
-                        {
-                            _queue.Clear();
-                            return results;
-                        }
-
-                        results.Add(_queue.Dequeue() >> 1);
-                        if (results.Count == maxResults)
-                        {
-                            _queue.Clear();
-                            return results;
-                        }
-                    }
+                    nodeIndex = stack.Pop();
                 }
-
-                nodeIndex = _queue.Count > 0 ? _queue.Dequeue() >> 1 : 0;
+                else
+                {
+                    break;
+                }
             }
 
-            _queue.Clear();
-            return results;
+            return true;
         }
 
         // 1D distance from a value to a range
         private static T AxisDist(T k, T min, T max)
         {
-            return k < min ? min - k : k <= max ? T.Zero : k - max;
+            if (k < min)
+            {
+                return min - k;
+            }
+            else
+            {
+                return k <= max ? T.Zero : k - max;
+            }
         }
 
         // Binary search for the first value in the array bigger than the given.
@@ -403,9 +611,11 @@ namespace concaveman
             (indices[j], indices[i]) = (indices[i], indices[j]);
         }
 
+        // Implementaion original contient n pour le nombre de dimension ? On s'en fiche car taille fixe
         // Fast Hilbert curve algorithm by http://threadlocalmutex.com/. Ported from C++ https://github.com/rawrunprotected/hilbert_curves (public domain)
         private static uint Hilbert(uint x, uint y)
         {
+            // Initial prefix scan round, prime with x and y
             uint a = x ^ y;
             uint b = 0xFFFF ^ a;
             uint c = 0xFFFF ^ (x | y);
@@ -413,14 +623,14 @@ namespace concaveman
 
             uint A = a | (b >> 1);
             uint B = (a >> 1) ^ a;
-            uint C = (c >> 1) ^ (b & (d >> 1)) ^ c;
-            uint D = (a & (c >> 1)) ^ (d >> 1) ^ d;
+            uint C = ((c >> 1) ^ (b & (d >> 1))) ^ c;
+            uint D = ((a & (c >> 1)) ^ (d >> 1)) ^ d;
 
             a = A; b = B; c = C; d = D;
-            A = (a & (a >> 2)) ^ (b & (b >> 2));
-            B = (a & (b >> 2)) ^ (b & ((a ^ b) >> 2));
-            C ^= (a & (c >> 2)) ^ (b & (d >> 2));
-            D ^= (b & (c >> 2)) ^ ((a ^ b) & (d >> 2));
+            A = ((a & (a >> 2)) ^ (b & (b >> 2)));
+            B = ((a & (b >> 2)) ^ (b & ((a ^ b) >> 2)));
+            C ^= ((a & (c >> 2)) ^ (b & (d >> 2)));
+            D ^= ((b & (c >> 2)) ^ ((a ^ b) & (d >> 2)));
 
             a = A; b = B; c = C; d = D;
             A = (a & (a >> 4)) ^ (b & (b >> 4));
@@ -428,27 +638,32 @@ namespace concaveman
             C ^= (a & (c >> 4)) ^ (b & (d >> 4));
             D ^= (b & (c >> 4)) ^ ((a ^ b) & (d >> 4));
 
+            // Final round and projection
             a = A; b = B; c = C; d = D;
             C ^= (a & (c >> 8)) ^ (b & (d >> 8));
             D ^= (b & (c >> 8)) ^ ((a ^ b) & (d >> 8));
 
+            // Undo transformation prefix scan
             a = C ^ (C >> 1);
             b = D ^ (D >> 1);
 
+            // Recover index bits
             uint i0 = x ^ y;
             uint i1 = b | (0xFFFF ^ (i0 | a));
 
+            // interleave
             i0 = (i0 | (i0 << 8)) & 0x00FF00FF;
             i0 = (i0 | (i0 << 4)) & 0x0F0F0F0F;
             i0 = (i0 | (i0 << 2)) & 0x33333333;
             i0 = (i0 | (i0 << 1)) & 0x55555555;
 
+            // interleave
             i1 = (i1 | (i1 << 8)) & 0x00FF00FF;
             i1 = (i1 | (i1 << 4)) & 0x0F0F0F0F;
             i1 = (i1 | (i1 << 2)) & 0x33333333;
             i1 = (i1 | (i1 << 1)) & 0x55555555;
 
-            return (i1 << 1) | i0;
+            return (i1 << 1 | i0);
         }
     }
 }
