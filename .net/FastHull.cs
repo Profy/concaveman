@@ -1,12 +1,90 @@
-﻿/*
-using RBush;
-
+﻿using System;
 using System.Collections.Generic;
 using System.Numerics;
 
+using RBush;
+
 namespace concaveman
 {
-    // Concaveman concave hull algorithm
+    // Monotone chain convex hull algorithm.
+    public static class ConvexHull2D<T> where T : INumber<T>
+    {
+        private static T Orient2d(T[] p1, T[] p2, T[] p3)
+        {
+            return (p2[1] - p1[1]) * (p3[0] - p2[0]) - (p2[0] - p1[0]) * (p3[1] - p2[1]);
+        }
+
+        /// <summary>
+        /// Returns the convex hull. It's not the points, but the indices of the points in the list that are returned.
+        /// </summary>
+        /// <param name="points">The list of points in the format {(x, y), (x, y), ...}.</param>
+        public static int[] GetConvexHull(T[][] points)
+        {
+            int[] result;
+
+            int n = points.Length;
+            if (n <= 3)
+            {
+                result = new int[n];
+                for (int i = 0; i < n; ++i)
+                {
+                    result[i] = i;
+                }
+                return result;
+            }
+
+            // Sort point indices.
+            int[] sorted = new int[n];
+            for (int i = 0; i < n; ++i)
+            {
+                sorted[i] = i;
+            }
+            Array.Sort(sorted, (a, b) => { return points[a][0] == points[b][0] ? points[a][1].CompareTo(points[b][1]) : (points[a][0] > points[b][0] ? 1 : -1); });
+
+            // Construct upper and lower hulls.
+            List<int> lower = [sorted[0], sorted[1]];
+            List<int> upper = [sorted[0], sorted[1]];
+            for (int i = 2; i < n; ++i)
+            {
+                int idx = sorted[i];
+                T[] p = points[idx];
+
+                // Insert into lower list.
+                int m = lower.Count;
+                while (m > 1 && Orient2d(points[lower[m - 2]], points[lower[m - 1]], p) <= T.Zero)
+                {
+                    m--;
+                    lower.RemoveAt(lower.Count - 1);
+                }
+                lower.Add(idx);
+
+                // Insert into upper list.
+                m = upper.Count;
+                while (m > 1 && Orient2d(points[upper[m - 2]], points[upper[m - 1]], p) >= T.Zero)
+                {
+                    m--;
+                    upper.RemoveAt(upper.Count - 1);
+                }
+                upper.Add(idx);
+            }
+
+            // Merge lists together.
+            result = new int[upper.Count + lower.Count - 2];
+            int ptr = 0;
+            for (int i = 0, nl = lower.Count; i < nl; ++i)
+            {
+                result[ptr++] = lower[i];
+            }
+            for (int i = upper.Count - 2; i > 0; --i)
+            {
+                result[ptr++] = upper[i];
+            }
+
+            return result;
+        }
+    }
+
+    // Concaveman concave hull algorithm.
     public static class ConcaveHull2D<T> where T : INumber<T>, IMinMaxValue<T>, IBitwiseOperators<T, T, T>, IShiftOperators<T, T, T>, IBinaryInteger<T>
     {
         private class Node : ISpatialData
@@ -49,7 +127,7 @@ namespace concaveman
                 m_envelope = new Envelope(double.CreateChecked(minX), double.CreateChecked(minY), double.CreateChecked(maxX), double.CreateChecked(maxY));
             }
 
-            // create a new point in a doubly linked list
+            // Create a new point in a doubly linked list.
             public Node(T[] p, Node prev) : this(p)
             {
                 if (prev == null)
@@ -67,16 +145,13 @@ namespace concaveman
             }
         }
 
-        // 2 concativity
-        // 0 lenght
-
         /// <summary>
-        /// 
+        /// Returns the concave hull. It's the list of the positions of the points {(x, y), (x, y), ...} on the hull is returned.
         /// </summary>
-        /// <param name=""></param>
-        /// <param name="hull"></param>
-        /// <param name="concavity">A relative measure of concavity; higher value means simpler hull.</param>
-        /// <param name="lengthThreshold">When a segment goes below this length threshold, it won't be drilled down further.</param>
+        /// <param name="points">The list of points in the format {(x, y), (x, y), ...}.</param>
+        /// <param name="hull">Concave hull points list.</param>
+        /// <param name="lengthThreshold">When a segment length is under this threshold, it stops being considered for further detalization. Higher values result in simpler shapes.</param>
+        /// <param name="concavity">Is a relative measure of concavity. 1 results in a relatively detailed shape, Infinity results in a convex hull. You can use values lower than 1, but they can produce pretty crazy shapes.</param>
         public static T[][] GetConcaveHull2D(T[][] points, int[] hull, T lengthThreshold, T concavity)
         {
             // Index the points with an R-tree
@@ -167,25 +242,25 @@ namespace concaveman
             PriorityQueue<Node, T> queue = new PriorityQueue<Node, T>(new CompareDist());
             RBush<Node>.Node node = tree.Root;
 
-            // Search through the point R-tree with a depth-first search using a priority queue in the order of distance to the edge (b, c)
+            // Search through the point R-tree with a depth-first search using a priority queue in the order of distance to the edge (b, c).
             while (true)
             {
                 for (int i = 0; i < node.Children.Count; i++)
                 {
-                    RBush<Node>.Node child = (RBush<Node>.Node)node.Children[i];
+                    Node child = (Node)node.Children[i];
                     T dist = node.IsLeaf ? SqSegDist(child.P, b, c) : SqSegBoxDist(b, c, child);
-                    if (dist > maxDist) // skip the node if it's farther than we ever need
+                    if (dist > maxDist) // Skip the node if it's farther than we ever need.
                     {
                         continue;
                     }
                     queue.Enqueue(child, dist);
                 }
 
-                while (queue.Count > 0 && !queue.Peek().node.children)
+                while (queue.Count > 0 && queue.Peek().Next != null)
                 {
                     queue.TryDequeue(out Node element, out T priority);
 
-                    // Skip all points that are as close to adjacent edges (a,b) and (c,d), and points that would introduce self-intersections when connected
+                    // Skip all points that are as close to adjacent edges (a,b) and (c,d), and points that would introduce self-intersections when connected.
                     var d0 = SqSegDist(element.P, a, b);
                     var d1 = SqSegDist(element.P, c, d);
                     if (priority < d0 && priority < d1 && NoIntersections(b, element.P, segTree) && NoIntersections(c, element.P, segTree))
@@ -199,7 +274,7 @@ namespace concaveman
                     break;
                 }
 
-                node = queue.Dequeue();
+                // node = queue.Dequeue();
             }
 
             return null;
@@ -218,7 +293,7 @@ namespace concaveman
             return ((p2[1] - p1[1]) * (p3[0] - p2[0])) - ((p2[0] - p1[0]) * (p3[1] - p2[1]));
         }
 
-        // square distance from a segment bounding box to the given one
+        // Square distance from a segment bounding box to the given one.
         private static T SqSegBoxDist(T[] a, T[] b, Node node)
         {
             if (Inside(a, node) || Inside(b, node))
@@ -253,13 +328,13 @@ namespace concaveman
             return d4 == T.Zero ? T.Zero : T.Min(T.Min(d1, d2), T.Min(d3, d4));
         }
 
-        // check if the point (a,b) is inside the node bbox
+        // Check if the point (a,b) is inside the node bbox.
         private static bool Inside(T[] a, Node node)
         {
             return (a[0] >= node.MinX) && (a[0] <= node.MaxX) && (a[1] >= node.MinY) && (a[1] <= node.MaxY);
         }
 
-        // check if the edge (a,b) doesn't intersect any other edges
+        // Check if the edge (a,b) doesn't intersect any other edges.
         private static bool NoIntersections(T[] a, T[] b, RBush<Node> segTree)
         {
             T minX = T.Min(a[0], b[0]);
@@ -278,7 +353,7 @@ namespace concaveman
             return true;
         }
 
-        // check if the edges (p1,q1) and (p2,q2) intersect
+        // Check if the edges (p1,q1) and (p2,q2) intersect.
         private static bool Intersects(T[] p1, T[] q1, T[] p2, T[] q2)
         {
             return (p1[0] != q2[0] || p1[1] != q2[1]) && (q1[0] != p2[0] || q1[1] != p2[1])
@@ -286,7 +361,7 @@ namespace concaveman
                 && (Orient2d(p2, q2, p1) > T.Zero) != (Orient2d(p2, q2, q1) > T.Zero);
         }
 
-        // update the bounding box of a node's edge
+        // Update the bounding box of a node's edge.
         private static Node UpdateBBox(Node node)
         {
             node.MinX = T.Min(node.P[0], node.Next.P[0]);
@@ -296,7 +371,7 @@ namespace concaveman
             return node;
         }
 
-        // square distance between 2 points
+        // Square distance between 2 points.
         private static T GetSqDist(T[] p1, T[] p2)
         {
             T dx = p1[0] - p2[0];
@@ -304,7 +379,7 @@ namespace concaveman
             return (dx * dx) + (dy * dy);
         }
 
-        // square distance from a point to a segment
+        // Square distance from a point to a segment.
         private static T SqSegDist(T[] p, T[] p1, T[] p2)
         {
             T x = p1[0];
@@ -334,7 +409,7 @@ namespace concaveman
             return (dx * dx) + (dy * dy);
         }
 
-        // segment to segment distance
+        // Segment to segment distance.
         private static T SqSegSegDist(T x0, T y0, T x1, T y1, T x2, T y2, T x3, T y3)
         {
             T ux = x1 - x0;
@@ -428,4 +503,3 @@ namespace concaveman
         }
     }
 }
-*/

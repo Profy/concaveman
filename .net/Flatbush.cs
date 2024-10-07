@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 
@@ -65,7 +65,7 @@ namespace concaveman
         }
 
         /// <summary>
-        /// Add a point to the index. EN rÃ©alitÃ© c'est un rectangle avec min et max identique.
+        /// Add a point to the index. EN réalité c'est un rectangle avec min et max identique.
         /// </summary>
         public int Add(T x, T y)
         {
@@ -227,11 +227,11 @@ namespace concaveman
         }
 
         /// <summary>
-        /// Search items in order of distance from the given point. Lesq distances sont au carrÃ©. Pour obtenir la distance eclidienne utiliser Math.sqrt().
+        /// Search items in order of distance from the given point. Lesq distances sont au carré. Pour obtenir la distance eclidienne utiliser Math.sqrt().
         /// </summary>
         /// <param name="x"></param>
         /// <param name="y"></param>
-        /// <param name="maxDistance">Si 0 ou moins alors est egamle Ã  la valeur max de T</param>
+        /// <param name="maxDistance">Si 0 ou moins alors est egamle à la valeur max de T</param>
         /// <param name="maxResults"></param>
         /// <returns></returns>
         /// <exception cref="InvalidOperationException"></exception>
@@ -303,11 +303,11 @@ namespace concaveman
             return false;
         }
         /// <summary>
-        /// Search items in order of distance from the given point. Lesq distances sont au carrÃ©. Pour obtenir la distance eclidienne utiliser Math.sqrt().
+        /// Search items in order of distance from the given point. Lesq distances sont au carré. Pour obtenir la distance eclidienne utiliser Math.sqrt().
         /// </summary>
         /// <param name="x"></param>
         /// <param name="y"></param>
-        /// <param name="maxDistance">Si 0 ou moins alors est egamle Ã  la valeur max de T</param>
+        /// <param name="maxDistance">Si 0 ou moins alors est egamle à la valeur max de T</param>
         /// <param name="maxResults"></param>
         /// <returns></returns>
         /// <exception cref="InvalidOperationException"></exception>
